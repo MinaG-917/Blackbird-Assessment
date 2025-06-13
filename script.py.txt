@@ -1,0 +1,52 @@
+import pandas as pd
+import requests
+from io import StringIO
+
+access_token = "0baaf4e1832be5782d9833889675dccf"
+headers = {"Authorization": f"Bearer {access_token}"}
+
+base_url = "https://it-hiring.blackbird.vc"
+crm_url = f"{base_url}/api/data/crm"
+form_url = f"{base_url}/api/data/form-submissions"
+
+crm_response = requests.get(crm_url, headers=headers)
+crm_df = pd.read_csv(StringIO(crm_response.text))
+
+form_response = requests.get(form_url, headers=headers)
+form_data = form_response.json()
+form_df = pd.json_normalize(form_data["data"])
+
+form_df[["first_form", "last_form"]] = form_df["name"].str.extract(r'^(\S+)\s+(.*)$')
+
+form_df.rename(columns={
+    "email": "email",
+    "phone": "phone_form",
+    "timestamp": "last contact date",
+    "message": "last contact text"
+}, inplace=True)
+
+form_df["all contact text"] = form_df["last contact text"]
+
+merged_df = pd.merge(crm_df, form_df, on="email", how="outer", suffixes=("", "_form"))
+
+merged_df["first"] = merged_df["first"].combine_first(merged_df["first_form"])
+merged_df["last"] = merged_df["last"].combine_first(merged_df["last_form"])
+merged_df["phone"] = merged_df["phone"].combine_first(merged_df["phone_form"])
+
+merged_df["last contact date"] = merged_df["last contact date_form"]
+merged_df["last contact text"] = merged_df["last contact text_form"]
+
+merged_df["all contact text"] = merged_df["all contact text"].fillna("") + " | " + merged_df["last contact text"].fillna("")
+
+if merged_df["id"].isnull().any():
+    max_id = pd.to_numeric(merged_df["id"].str.extract(r"(\d+)", expand=False), errors="coerce").dropna().astype(int).max()
+    new_ids = [f"bfx-{max_id + i + 1}" for i in range(merged_df["id"].isnull().sum())]
+    merged_df.loc[merged_df["id"].isnull(), "id"] = new_ids
+
+final_df = merged_df[[
+    "id", "first", "last", "email", "phone",
+    "last contact date", "last contact text", "all contact text"
+]]
+
+final_df.to_csv("crm_update.csv", index=False)
+print("crm_update.csv has been generated.")
